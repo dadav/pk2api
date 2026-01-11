@@ -1,0 +1,33 @@
+[build-system]
+requires = ["setuptools>=61.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "pk2api"
+version = "1.0.0"
+description = "Python library to read and write Silkroad Online PK2 files"
+readme = "README.md"
+license = {text = "MIT"}
+authors = [
+    {name = "Engels Quintero"}
+]
+requires-python = ">=3.10"
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Intended Audience :: Developers",
+    "License :: OSI Approved :: MIT License",
+    "Operating System :: OS Independent",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Topic :: Games/Entertainment",
+    "Topic :: Software Development :: Libraries :: Python Modules",
+]
+keywords = ["silkroad", "pk2", "mmorpg", "game", "archive"]
+
+[project.urls]
+Homepage = "https://github.com/ddavid/SRO.PK2API"
+
+[tool.setuptools.packages.find]
+include = ["pk2api*"]

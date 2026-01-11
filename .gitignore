@@ -1,6 +1,11 @@
-# Visual Studio cache
-.vs/
+# Python-generated files
+__pycache__/
+*.py[oc]
+build/
+dist/
+wheels/
+*.egg-info
 
-# Debugging data generated
-SRO.PK2API/bin/
-SRO.PK2API/obj/
+# Virtual environments
+.venv
+*.spec
