@@ -9,7 +9,7 @@ description = "Python library to read and write Silkroad Online PK2 files"
 readme = "README.md"
 license = {text = "MIT"}
 authors = [
-    {name = "Engels Quintero"}
+    {name = "dadav"}
 ]
 requires-python = ">=3.10"
 classifiers = [
