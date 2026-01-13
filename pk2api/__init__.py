@@ -21,7 +21,7 @@ Example usage:
 """
 from .pk2_file import Pk2File
 from .pk2_folder import Pk2Folder
-from .pk2_stream import Pk2AuthenticationError, Pk2Stream
+from .pk2_stream import Pk2AuthenticationError, Pk2Stream, ProgressCallback
 from .structures import (
     PackFileBlock,
     PackFileEntry,
@@ -37,6 +37,7 @@ __all__ = [
     "Pk2File",
     "Pk2Folder",
     "Pk2AuthenticationError",
+    "ProgressCallback",
     "PackFileHeader",
     "PackFileBlock",
     "PackFileEntry",

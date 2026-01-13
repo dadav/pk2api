@@ -3,11 +3,13 @@ Pk2Stream - Main class for reading and writing PK2 archives.
 """
 from __future__ import annotations
 
+import fnmatch
 import math
 import os
+from collections.abc import Iterator
 from datetime import datetime
 from pathlib import Path
-from typing import BinaryIO
+from typing import BinaryIO, Callable
 
 from .pk2_file import Pk2File
 from .pk2_folder import Pk2Folder
@@ -23,6 +25,9 @@ from .structures import (
 class Pk2AuthenticationError(Exception):
     """Raised when the Blowfish key is incorrect."""
     pass
+
+
+ProgressCallback = Callable[[int, int], None]  # (current, total)
 
 
 class Pk2Stream:
@@ -219,6 +224,7 @@ class Pk2Stream:
                             self._file_stream,
                             file_offset,
                             len(data),
+                            original_name=existing_file.original_name,
                         )
                         # Write file data
                         self._file_stream.seek(new_file.offset)
@@ -358,6 +364,194 @@ class Pk2Stream:
 
         return False
 
+    def iter_files(self) -> Iterator[Pk2File]:
+        """Iterate over all files in the archive."""
+        yield from self._files.values()
+
+    def iter_folders(self) -> Iterator[Pk2Folder]:
+        """Iterate over all folders in the archive."""
+        yield from self._folders.values()
+
+    def glob(self, pattern: str) -> list[Pk2File]:
+        """
+        Find files matching a glob pattern.
+
+        Args:
+            pattern: Glob pattern (e.g., '**/*.txt', 'data/*.xml')
+
+        Returns:
+            List of matching Pk2File objects
+        """
+        pattern = pattern.lower().replace("/", os.sep).replace("\\", os.sep)
+        return [
+            f for f in self._files.values() if fnmatch.fnmatch(f.get_full_path(), pattern)
+        ]
+
+    def get_stats(self) -> dict:
+        """
+        Get archive statistics.
+
+        Returns:
+            Dictionary with keys: files, folders, total_size, disk_used
+        """
+        return {
+            "files": len(self._files),
+            "folders": len(self._folders),
+            "total_size": sum(f.size for f in self._files.values()),
+            "disk_used": sum(self._disk_allocations.values()),
+        }
+
+    def extract_all(
+        self, output_dir: str | Path, progress: ProgressCallback | None = None
+    ) -> int:
+        """
+        Extract all files to output directory.
+
+        Args:
+            output_dir: Destination directory
+            progress: Optional callback(current, total) for progress updates
+
+        Returns:
+            Number of files extracted
+        """
+        output_path = Path(output_dir)
+        files = list(self._files.values())
+        total = len(files)
+
+        for i, file in enumerate(files):
+            if progress:
+                progress(i, total)
+
+            rel_path = file.get_original_path()
+            dest = output_path / rel_path
+            dest.parent.mkdir(parents=True, exist_ok=True)
+            dest.write_bytes(file.get_content())
+
+        if progress:
+            progress(total, total)
+        return total
+
+    def extract_folder(
+        self,
+        folder_path: str,
+        output_dir: str | Path,
+        progress: ProgressCallback | None = None,
+    ) -> int:
+        """
+        Extract a specific folder to output directory.
+
+        Args:
+            folder_path: Path of folder to extract
+            output_dir: Destination directory
+            progress: Optional callback(current, total) for progress updates
+
+        Returns:
+            Number of files extracted
+
+        Raises:
+            ValueError: If folder not found
+        """
+        folder = self.get_folder(folder_path)
+        if folder is None:
+            raise ValueError(f"Folder not found: {folder_path}")
+
+        output_path = Path(output_dir)
+        prefix = folder.get_full_path()
+        prefix_len = len(prefix) + 1 if prefix else 0  # +1 for separator
+
+        files = [
+            f
+            for f in self._files.values()
+            if f.get_full_path() == prefix or f.get_full_path().startswith(prefix + os.sep)
+        ]
+        total = len(files)
+
+        for i, file in enumerate(files):
+            if progress:
+                progress(i, total)
+
+            # Get path relative to extracted folder
+            original_path = file.get_original_path()
+            rel_path = original_path[prefix_len:] if prefix_len else original_path
+            if not rel_path:
+                rel_path = file.original_name
+
+            dest = output_path / rel_path
+            dest.parent.mkdir(parents=True, exist_ok=True)
+            dest.write_bytes(file.get_content())
+
+        if progress:
+            progress(total, total)
+        return total
+
+    def import_from_disk(
+        self,
+        source_dir: str | Path,
+        target_path: str = "",
+        progress: ProgressCallback | None = None,
+    ) -> int:
+        """
+        Import a directory tree into the archive.
+
+        Args:
+            source_dir: Source directory to import
+            target_path: Target path in archive (empty for root)
+            progress: Optional callback(current, total) for progress updates
+
+        Returns:
+            Number of files imported
+
+        Raises:
+            ValueError: If source is not a directory
+        """
+        source = Path(source_dir)
+        if not source.is_dir():
+            raise ValueError(f"Not a directory: {source_dir}")
+
+        files = [f for f in source.rglob("*") if f.is_file()]
+        total = len(files)
+
+        for i, file in enumerate(files):
+            if progress:
+                progress(i, total)
+
+            rel_path = file.relative_to(source)
+            archive_path = (
+                os.path.join(target_path, str(rel_path)) if target_path else str(rel_path)
+            )
+            self.add_file(archive_path, file.read_bytes())
+
+        if progress:
+            progress(total, total)
+        return total
+
+    def validate(self) -> list[str]:
+        """
+        Validate archive integrity.
+
+        Returns:
+            List of error messages (empty if valid)
+        """
+        errors = []
+
+        # Check all files are readable
+        for path, file in self._files.items():
+            try:
+                content = file.get_content()
+                if len(content) != file.size:
+                    errors.append(
+                        f"Size mismatch: {path} (expected {file.size}, got {len(content)})"
+                    )
+            except Exception as e:
+                errors.append(f"Read error: {path} - {e}")
+
+        # Check folder structure consistency
+        for path, folder in self._folders.items():
+            if folder.parent and folder not in folder.parent.folders.values():
+                errors.append(f"Orphan folder: {path}")
+
+        return errors
+
     # Private methods
 
     def _create_base_stream(self) -> None:
@@ -402,13 +596,22 @@ class Pk2Stream:
                 if entry.name in (".", ".."):
                     continue
                 # Create folder
-                new_folder = Pk2Folder(entry.name, parent, entry.offset)
+                new_folder = Pk2Folder(
+                    entry.name.lower(), parent, entry.offset, original_name=entry.name
+                )
                 parent.folders[entry.name.lower()] = new_folder
                 self._folders[new_folder.get_full_path()] = new_folder
                 self._disk_allocations[entry.offset] = PackFileBlock.SIZE
                 self._initialize_stream_block(entry.offset, new_folder)
             elif entry.entry_type == PackFileEntryType.FILE:
-                new_file = Pk2File(entry.name, parent, self._file_stream, entry.offset, entry.size)
+                new_file = Pk2File(
+                    entry.name.lower(),
+                    parent,
+                    self._file_stream,
+                    entry.offset,
+                    entry.size,
+                    original_name=entry.name,
+                )
                 parent.files[entry.name.lower()] = new_file
                 self._files[new_file.get_full_path()] = new_file
                 self._disk_allocations[entry.offset] = entry.size

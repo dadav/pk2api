@@ -29,5 +29,8 @@ keywords = ["silkroad", "pk2", "mmorpg", "game", "archive"]
 [project.urls]
 Homepage = "https://github.com/ddavid/SRO.PK2API"
 
+[project.scripts]
+pk2 = "pk2api.cli:main"
+
 [tool.setuptools.packages.find]
 include = ["pk2api*"]

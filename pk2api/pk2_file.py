@@ -18,31 +18,43 @@ class Pk2File:
         file_stream: BinaryIO,
         offset: int,
         size: int,
+        original_name: str | None = None,
     ):
         """
         Initialize a Pk2File.
 
         Args:
-            name: File name
+            name: File name (lowercase)
             parent: Parent folder
             file_stream: The underlying file stream for reading content
             offset: Byte offset of the file data in the stream
             size: File size in bytes
+            original_name: Original case-preserved name from archive
         """
         self.name = name
         self.parent = parent
         self._file_stream = file_stream
         self.offset = offset
         self.size = size
+        self.original_name = original_name or name
 
     def get_full_path(self) -> str:
-        """Get the full path to this file from root."""
+        """Get the full path to this file from root (lowercase)."""
         if self.parent is not None:
             parent_path = self.parent.get_full_path()
             if parent_path:
                 return os.path.join(parent_path, self.name.lower())
             return self.name.lower()
         return self.name.lower()
+
+    def get_original_path(self) -> str:
+        """Get the full path with original case preserved."""
+        if self.parent is not None:
+            parent_path = self.parent.get_original_path()
+            if parent_path:
+                return os.path.join(parent_path, self.original_name)
+            return self.original_name
+        return self.original_name
 
     def get_content(self) -> bytes:
         """Read and return the file content."""
