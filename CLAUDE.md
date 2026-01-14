@@ -27,6 +27,17 @@ pk2 extract Media.pk2 -f data -o ./out # Extract specific folder
 pk2 add Media.pk2 ./files -t target   # Import directory
 pk2 info Media.pk2                    # Show archive stats
 pk2 validate Media.pk2                # Check integrity
+
+# Compare archives
+pk2 compare old.pk2 new.pk2           # Text diff output
+pk2 compare old.pk2 new.pk2 -f json   # JSON output for tools
+pk2 cmp old.pk2 new.pk2 --quick       # Size-only comparison (faster)
+
+# Copy between archives
+pk2 copy src.pk2 dst.pk2 path/file.txt        # Copy single file
+pk2 copy src.pk2 dst.pk2 "**/*.xml"           # Copy files matching glob
+pk2 copy src.pk2 dst.pk2 data/folder -r       # Copy folder recursively
+pk2 cp src.pk2 dst.pk2 folder -r -d backup    # Copy to different destination
 ```
 
 No test framework is currently configured.
@@ -41,6 +52,7 @@ pk2api/
 ├── pk2_file.py        # File wrapper with lazy content loading
 ├── pk2_folder.py      # Folder wrapper with path resolution
 ├── structures.py      # Binary format definitions (header, entry, block)
+├── comparison.py      # Archive comparison (diff) functionality
 ├── cli.py             # Command-line interface
 └── security/
     └── blowfish.py    # Silkroad-specific Blowfish cipher implementation
@@ -79,6 +91,17 @@ pk2api/
 - `extract_folder(folder_path, output_dir, progress=None)` - Extract subfolder
 - `import_from_disk(source_dir, target_path="", progress=None)` - Bulk import
 - `validate()` - Check archive integrity
+
+**Pk2Stream** copy methods (inter-archive operations):
+- `copy_file_from(source, source_path, target_path=None)` - Copy single file from another archive
+- `copy_folder_from(source, source_path, target_path=None, progress=None)` - Copy folder recursively
+- `copy_files_from(source, paths, target_base="", progress=None)` - Copy multiple files
+
+**Comparison** (in comparison.py):
+- `compare_archives(source, target, compute_hashes=True, ...)` - Compare two archives
+- `ComparisonResult` - Result object with `added_files`, `removed_files`, `modified_files` properties
+- `FileChange`, `FolderChange` - Change detail dataclasses
+- `ChangeType` - Enum: ADDED, REMOVED, MODIFIED, UNCHANGED
 
 **Pk2File/Pk2Folder** properties:
 - `original_name` - Case-preserved name from archive

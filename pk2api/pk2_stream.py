@@ -769,3 +769,131 @@ class Pk2Stream:
             del self._folders[full_path]
         if folder.offset in self._disk_allocations:
             del self._disk_allocations[folder.offset]
+
+    # Copy methods for inter-archive operations
+
+    def copy_file_from(
+        self,
+        source: Pk2Stream,
+        source_path: str,
+        target_path: str | None = None,
+    ) -> bool:
+        """
+        Copy a single file from another archive.
+
+        Args:
+            source: Source archive to copy from
+            source_path: Path of file in source archive
+            target_path: Destination path (defaults to same as source)
+
+        Returns:
+            True if successful, False if source file not found
+        """
+        source_file = source.get_file(source_path)
+        if source_file is None:
+            return False
+
+        dest_path = target_path if target_path else source_file.get_original_path()
+        content = source_file.get_content()
+        return self.add_file(dest_path, content)
+
+    def copy_folder_from(
+        self,
+        source: Pk2Stream,
+        source_path: str,
+        target_path: str | None = None,
+        progress: ProgressCallback | None = None,
+    ) -> int:
+        """
+        Copy a folder and all its contents from another archive.
+
+        Args:
+            source: Source archive to copy from
+            source_path: Path of folder in source archive
+            target_path: Destination path (defaults to same as source)
+            progress: Optional callback(current, total) for progress
+
+        Returns:
+            Number of files copied
+
+        Raises:
+            ValueError: If source folder not found
+        """
+        source_folder = source.get_folder(source_path)
+        if source_folder is None:
+            raise ValueError(f"Folder not found: {source_path}")
+
+        # Get all files under the source folder
+        prefix = source_folder.get_full_path()
+        prefix_len = len(prefix) + 1 if prefix else 0
+
+        files_to_copy = [
+            f
+            for f in source.iter_files()
+            if f.get_full_path() == prefix
+            or f.get_full_path().startswith(prefix + os.sep)
+        ]
+
+        total = len(files_to_copy)
+        dest_base = target_path if target_path is not None else prefix
+
+        for i, file in enumerate(files_to_copy):
+            if progress:
+                progress(i, total)
+
+            # Compute relative path within source folder
+            rel_path = (
+                file.get_original_path()[prefix_len:] if prefix_len else file.get_original_path()
+            )
+            if not rel_path:
+                rel_path = file.original_name
+
+            # Compute destination path
+            dest_path = os.path.join(dest_base, rel_path) if dest_base else rel_path
+            self.add_file(dest_path, file.get_content())
+
+        if progress:
+            progress(total, total)
+
+        return total
+
+    def copy_files_from(
+        self,
+        source: Pk2Stream,
+        paths: list[str],
+        target_base: str = "",
+        progress: ProgressCallback | None = None,
+    ) -> int:
+        """
+        Copy multiple files from another archive.
+
+        Args:
+            source: Source archive to copy from
+            paths: List of file paths to copy
+            target_base: Base path for destination (prepended to each file's name)
+            progress: Optional callback(current, total) for progress
+
+        Returns:
+            Number of files successfully copied
+        """
+        total = len(paths)
+        copied = 0
+
+        for i, path in enumerate(paths):
+            if progress:
+                progress(i, total)
+
+            source_file = source.get_file(path)
+            if source_file:
+                dest_path = (
+                    os.path.join(target_base, source_file.original_name)
+                    if target_base
+                    else source_file.get_original_path()
+                )
+                if self.add_file(dest_path, source_file.get_content()):
+                    copied += 1
+
+        if progress:
+            progress(total, total)
+
+        return copied

@@ -4,9 +4,11 @@ PK2 Command Line Interface.
 from __future__ import annotations
 
 import argparse
+import json
 import sys
 from pathlib import Path
 
+from .comparison import ChangeType, compare_archives
 from .pk2_stream import Pk2AuthenticationError, Pk2Stream
 
 
@@ -149,6 +151,144 @@ def cmd_validate(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_compare(args: argparse.Namespace) -> int:
+    """Compare two archives."""
+    try:
+        with Pk2Stream(args.source, args.key, read_only=True) as source:
+            with Pk2Stream(args.target, args.key, read_only=True) as target:
+
+                def progress_cb(current_file: str, current: int, total: int) -> None:
+                    if not args.quiet and total > 0:
+                        _progress_bar(current, total)
+
+                result = compare_archives(
+                    source,
+                    target,
+                    compute_hashes=not args.quick,
+                    hash_algorithm=args.hash,
+                    include_unchanged=args.all,
+                    progress=progress_cb if not args.quiet else None,
+                )
+
+                if args.format == "json":
+                    print(json.dumps(result.to_dict(), indent=2))
+                else:
+                    # Text output
+                    print(f"Comparing: {args.source} -> {args.target}\n")
+
+                    if result.removed_files:
+                        print(f"Removed ({len(result.removed_files)}):")
+                        for f in result.removed_files:
+                            print(f"  - {f.original_path} ({_format_size(f.source_size)})")
+
+                    if result.added_files:
+                        print(f"\nAdded ({len(result.added_files)}):")
+                        for f in result.added_files:
+                            print(f"  + {f.original_path} ({_format_size(f.target_size)})")
+
+                    if result.modified_files:
+                        print(f"\nModified ({len(result.modified_files)}):")
+                        for f in result.modified_files:
+                            size_change = (f.target_size or 0) - (f.source_size or 0)
+                            sign = "+" if size_change >= 0 else ""
+                            print(
+                                f"  * {f.original_path} ({sign}{_format_size(abs(size_change))})"
+                            )
+
+                    if result.folder_changes:
+                        removed_folders = [
+                            f
+                            for f in result.folder_changes
+                            if f.change_type == ChangeType.REMOVED
+                        ]
+                        added_folders = [
+                            f
+                            for f in result.folder_changes
+                            if f.change_type == ChangeType.ADDED
+                        ]
+
+                        if removed_folders:
+                            print(f"\nFolders removed ({len(removed_folders)}):")
+                            for f in removed_folders:
+                                print(f"  - {f.original_path}/")
+
+                        if added_folders:
+                            print(f"\nFolders added ({len(added_folders)}):")
+                            for f in added_folders:
+                                print(f"  + {f.original_path}/")
+
+                    if not result.has_differences:
+                        print("Archives are identical")
+                    else:
+                        print(
+                            f"\nSummary: {len(result.added_files)} added, "
+                            f"{len(result.removed_files)} removed, "
+                            f"{len(result.modified_files)} modified"
+                        )
+
+                # Return 0 if identical, 2 if different (like diff)
+                return 0 if not result.has_differences else 2
+
+    except Pk2AuthenticationError:
+        print("Error: Invalid encryption key", file=sys.stderr)
+        return 1
+    except FileNotFoundError as e:
+        print(f"Error: File not found: {e.filename}", file=sys.stderr)
+        return 1
+
+
+def cmd_copy(args: argparse.Namespace) -> int:
+    """Copy files between archives."""
+    try:
+        with Pk2Stream(args.source, args.key, read_only=True) as source:
+            with Pk2Stream(args.target, args.key) as target:
+                progress = _progress_bar if not args.quiet else None
+
+                if args.folder:
+                    # Copy entire folder
+                    count = target.copy_folder_from(
+                        source,
+                        args.path,
+                        args.dest if args.dest else None,
+                        progress=progress,
+                    )
+                else:
+                    # Copy single file or glob pattern
+                    if "*" in args.path or "?" in args.path:
+                        # Glob pattern
+                        files = source.glob(args.path)
+                        if not files:
+                            print(f"No files match pattern: {args.path}", file=sys.stderr)
+                            return 1
+                        paths = [f.get_full_path() for f in files]
+                        count = target.copy_files_from(
+                            source, paths, args.dest, progress=progress
+                        )
+                    else:
+                        # Single file
+                        if target.copy_file_from(
+                            source, args.path, args.dest if args.dest else None
+                        ):
+                            count = 1
+                        else:
+                            print(f"Error: File not found: {args.path}", file=sys.stderr)
+                            return 1
+
+                if not args.quiet:
+                    print(f"Copied {count} file(s)")
+                return 0
+
+    except Pk2AuthenticationError:
+        print("Error: Invalid encryption key", file=sys.stderr)
+        return 1
+    except FileNotFoundError as e:
+        print(f"Error: File not found: {e.filename}", file=sys.stderr)
+        return 1
+    except ValueError as e:
+        print(f"Error: {e}", file=sys.stderr)
+        return 1
+
+
 def main() -> int:
     """Main entry point."""
     parser = argparse.ArgumentParser(
@@ -192,6 +332,55 @@ def main() -> int:
     val_p = subparsers.add_parser("validate", help="Validate archive integrity")
     val_p.add_argument("archive", help="PK2 archive path")
     val_p.set_defaults(func=cmd_validate)
+
+    # compare command
+    cmp_p = subparsers.add_parser(
+        "compare", aliases=["cmp"], help="Compare two archives"
+    )
+    cmp_p.add_argument("source", help="Source archive (reference)")
+    cmp_p.add_argument("target", help="Target archive to compare")
+    cmp_p.add_argument(
+        "--format",
+        "-f",
+        choices=["text", "json"],
+        default="text",
+        help="Output format (default: text)",
+    )
+    cmp_p.add_argument(
+        "--quick",
+        "-Q",
+        action="store_true",
+        help="Skip hash comparison (size-only for modifications)",
+    )
+    cmp_p.add_argument(
+        "--hash",
+        default="md5",
+        choices=["md5", "sha256"],
+        help="Hash algorithm (default: md5)",
+    )
+    cmp_p.add_argument(
+        "--all", "-a", action="store_true", help="Include unchanged files in output"
+    )
+    cmp_p.add_argument(
+        "--quiet", "-q", action="store_true", help="Suppress progress output"
+    )
+    cmp_p.set_defaults(func=cmd_compare)
+
+    # copy command
+    cp_p = subparsers.add_parser("copy", aliases=["cp"], help="Copy files between archives")
+    cp_p.add_argument("source", help="Source archive")
+    cp_p.add_argument("target", help="Target archive")
+    cp_p.add_argument("path", help="File path, glob pattern, or folder to copy")
+    cp_p.add_argument(
+        "--dest", "-d", default="", help="Destination path in target archive"
+    )
+    cp_p.add_argument(
+        "--folder", "-r", action="store_true", help="Copy entire folder recursively"
+    )
+    cp_p.add_argument(
+        "--quiet", "-q", action="store_true", help="Suppress progress output"
+    )
+    cp_p.set_defaults(func=cmd_copy)
 
     args = parser.parse_args()
     return args.func(args)
