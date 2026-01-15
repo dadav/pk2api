@@ -195,6 +195,11 @@ def cmd_compare(args: argparse.Namespace) -> int:
                                 f"  * {f.original_path} ({sign}{_format_size(abs(size_change))})"
                             )
 
+                    if result.unchanged_files:
+                        print(f"\nUnchanged ({len(result.unchanged_files)}):")
+                        for f in result.unchanged_files:
+                            print(f"  = {f.original_path} ({_format_size(f.source_size)})")
+
                     if result.folder_changes:
                         removed_folders = [
                             f
@@ -223,7 +228,8 @@ def cmd_compare(args: argparse.Namespace) -> int:
                         print(
                             f"\nSummary: {len(result.added_files)} added, "
                             f"{len(result.removed_files)} removed, "
-                            f"{len(result.modified_files)} modified"
+                            f"{len(result.modified_files)} modified, "
+                            f"{len(result.unchanged_files)} unchanged"
                         )
 
                 # Return 0 if identical, 2 if different (like diff)

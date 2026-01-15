@@ -116,7 +116,6 @@ class ComparisonResult:
                     "target_hash": f.target_hash,
                 }
                 for f in self.file_changes
-                if f.change_type != ChangeType.UNCHANGED
             ],
             "folders": [
                 {"path": f.original_path, "change": f.change_type.value}
