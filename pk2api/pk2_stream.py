@@ -104,26 +104,20 @@ class Pk2Stream:
         try:
             self._disk_allocations[root.offset] = PackFileBlock.SIZE
 
-            # Set up progress tracking
+            # Set up progress tracking (count blocks as we load them)
             progress_state = None
             if progress:
-                # Estimate total blocks from file size
-                self._file_stream.seek(0, 2)
-                file_size = self._file_stream.tell()
-                estimated_blocks = max(1, file_size // PackFileBlock.SIZE)
                 progress_state = {
                     "loaded": 0,
-                    "total": estimated_blocks,
                     "callback": progress,
                 }
 
             self._initialize_stream_block(root.offset, root, progress_state)
 
-            # Final progress callback
+            # Final progress callback with actual total
             if progress_state:
-                progress_state["callback"](
-                    progress_state["loaded"], progress_state["loaded"]
-                )
+                total = progress_state["loaded"]
+                progress_state["callback"](total, total)
         except Exception as ex:
             raise IOError(f"Error reading PK2 file: {ex}") from ex
 
@@ -618,12 +612,10 @@ class Pk2Stream:
         """Recursively load all blocks and build folder/file structure."""
         block = self._load_pack_file_block(offset)
 
-        # Report progress after loading block
+        # Report progress after loading block (total unknown until complete)
         if progress_state:
             progress_state["loaded"] += 1
-            progress_state["callback"](
-                progress_state["loaded"], progress_state["total"]
-            )
+            progress_state["callback"](progress_state["loaded"], 0)
 
         for entry in block.entries:
             if entry.entry_type == PackFileEntryType.EMPTY:
