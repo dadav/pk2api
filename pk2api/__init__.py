@@ -38,7 +38,7 @@ from .comparison import (
 )
 from .pk2_file import Pk2File
 from .pk2_folder import Pk2Folder
-from .pk2_stream import Pk2AuthenticationError, Pk2Stream, ProgressCallback
+from .pk2_stream import Pk2AuthenticationError, Pk2Stream, ProgressCallback, OpenProgressCallback
 from .structures import (
     PackFileBlock,
     PackFileEntry,
@@ -56,6 +56,7 @@ __all__ = [
     "Pk2Folder",
     "Pk2AuthenticationError",
     "ProgressCallback",
+    "OpenProgressCallback",
     # Structures
     "PackFileHeader",
     "PackFileBlock",

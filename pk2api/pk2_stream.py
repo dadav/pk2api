@@ -28,6 +28,7 @@ class Pk2AuthenticationError(Exception):
 
 
 ProgressCallback = Callable[[int, int], None]  # (current, total)
+OpenProgressCallback = Callable[[int, int], None]  # (blocks_loaded, estimated_total)
 
 
 class Pk2Stream:
@@ -38,7 +39,13 @@ class Pk2Stream:
     Supports creating new archives, adding/removing files and folders.
     """
 
-    def __init__(self, path: str | Path, key: str, read_only: bool = False):
+    def __init__(
+        self,
+        path: str | Path,
+        key: str,
+        read_only: bool = False,
+        progress: OpenProgressCallback | None = None,
+    ):
         """
         Initialize a PK2 stream.
 
@@ -46,6 +53,7 @@ class Pk2Stream:
             path: Path to the PK2 file
             key: Blowfish encryption key
             read_only: If True, open in read-only mode. Otherwise, create if doesn't exist.
+            progress: Optional callback(blocks_loaded, estimated_total) for progress updates
 
         Raises:
             Pk2AuthenticationError: If the key is incorrect
@@ -95,7 +103,27 @@ class Pk2Stream:
         # Load all blocks
         try:
             self._disk_allocations[root.offset] = PackFileBlock.SIZE
-            self._initialize_stream_block(root.offset, root)
+
+            # Set up progress tracking
+            progress_state = None
+            if progress:
+                # Estimate total blocks from file size
+                self._file_stream.seek(0, 2)
+                file_size = self._file_stream.tell()
+                estimated_blocks = max(1, file_size // PackFileBlock.SIZE)
+                progress_state = {
+                    "loaded": 0,
+                    "total": estimated_blocks,
+                    "callback": progress,
+                }
+
+            self._initialize_stream_block(root.offset, root, progress_state)
+
+            # Final progress callback
+            if progress_state:
+                progress_state["callback"](
+                    progress_state["loaded"], progress_state["loaded"]
+                )
         except Exception as ex:
             raise IOError(f"Error reading PK2 file: {ex}") from ex
 
@@ -584,9 +612,18 @@ class Pk2Stream:
             self._file_stream.write(bytes(4096 - current_length))
             self._file_stream.flush()
 
-    def _initialize_stream_block(self, offset: int, parent: Pk2Folder) -> None:
+    def _initialize_stream_block(
+        self, offset: int, parent: Pk2Folder, progress_state: dict | None = None
+    ) -> None:
         """Recursively load all blocks and build folder/file structure."""
         block = self._load_pack_file_block(offset)
+
+        # Report progress after loading block
+        if progress_state:
+            progress_state["loaded"] += 1
+            progress_state["callback"](
+                progress_state["loaded"], progress_state["total"]
+            )
 
         for entry in block.entries:
             if entry.entry_type == PackFileEntryType.EMPTY:
@@ -602,7 +639,7 @@ class Pk2Stream:
                 parent.folders[entry.name.lower()] = new_folder
                 self._folders[new_folder.get_full_path()] = new_folder
                 self._disk_allocations[entry.offset] = PackFileBlock.SIZE
-                self._initialize_stream_block(entry.offset, new_folder)
+                self._initialize_stream_block(entry.offset, new_folder, progress_state)
             elif entry.entry_type == PackFileEntryType.FILE:
                 new_file = Pk2File(
                     entry.name.lower(),
@@ -619,8 +656,8 @@ class Pk2Stream:
         # Check for next block in chain
         next_block = block.entries[-1].next_block
         if next_block != 0:
-            self._initialize_stream_block(next_block, parent)
             self._disk_allocations[next_block] = PackFileBlock.SIZE
+            self._initialize_stream_block(next_block, parent, progress_state)
 
     def _load_pack_file_block(self, offset: int) -> PackFileBlock:
         """Load and decrypt a PackFileBlock from the given offset."""
