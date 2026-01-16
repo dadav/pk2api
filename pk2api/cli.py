@@ -295,6 +295,54 @@ def cmd_copy(args: argparse.Namespace) -> int:
         return 1
 
 
+def cmd_grep(args: argparse.Namespace) -> int:
+    """Search for text in archive files."""
+    try:
+        with Pk2Stream(args.archive, args.key, read_only=True) as pk2:
+            if args.file_pattern:
+                files = pk2.glob(args.file_pattern)
+            else:
+                files = list(pk2.iter_files())
+
+            pattern = args.pattern
+            if args.ignore_case:
+                pattern = pattern.lower()
+
+            match_count = 0
+            matched_files = set()
+
+            for file in sorted(files, key=lambda f: f.get_full_path()):
+                try:
+                    content = file.get_content().decode("utf-8")
+                except UnicodeDecodeError:
+                    continue  # Skip binary files
+
+                lines = content.splitlines()
+                for line_num, line in enumerate(lines, 1):
+                    search_line = line.lower() if args.ignore_case else line
+                    if pattern in search_line:
+                        match_count += 1
+                        filepath = file.get_original_path()
+
+                        if args.files_only:
+                            if filepath not in matched_files:
+                                matched_files.add(filepath)
+                                print(filepath)
+                        else:
+                            print(f"{filepath}:{line_num}:{line}")
+
+            if match_count == 0:
+                return 2  # No matches (like grep)
+            return 0
+
+    except Pk2AuthenticationError:
+        print("Error: Invalid encryption key", file=sys.stderr)
+        return 1
+    except FileNotFoundError:
+        print(f"Error: File not found: {args.archive}", file=sys.stderr)
+        return 1
+
+
 def main() -> int:
     """Main entry point."""
     parser = argparse.ArgumentParser(
@@ -387,6 +435,15 @@ def main() -> int:
         "--quiet", "-q", action="store_true", help="Suppress progress output"
     )
     cp_p.set_defaults(func=cmd_copy)
+
+    # grep command
+    grep_p = subparsers.add_parser("grep", help="Search for text in files")
+    grep_p.add_argument("archive", help="PK2 archive path")
+    grep_p.add_argument("pattern", help="Text to search for")
+    grep_p.add_argument("-p", "--file-pattern", help="Glob pattern to filter files")
+    grep_p.add_argument("-i", "--ignore-case", action="store_true", help="Case-insensitive")
+    grep_p.add_argument("-l", "--files-only", action="store_true", help="Only print filenames")
+    grep_p.set_defaults(func=cmd_grep)
 
     args = parser.parse_args()
     return args.func(args)

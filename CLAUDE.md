@@ -33,6 +33,12 @@ pk2 compare old.pk2 new.pk2           # Text diff output
 pk2 compare old.pk2 new.pk2 -f json   # JSON output for tools
 pk2 cmp old.pk2 new.pk2 --quick       # Size-only comparison (faster)
 
+# Search in archives
+pk2 grep Media.pk2 "search text"      # Search all files
+pk2 grep Media.pk2 "text" -p "*.txt"  # Filter by glob pattern
+pk2 grep Media.pk2 "text" -i          # Case-insensitive
+pk2 grep Media.pk2 "text" -l          # List matching filenames only
+
 # Copy between archives
 pk2 copy src.pk2 dst.pk2 path/file.txt        # Copy single file
 pk2 copy src.pk2 dst.pk2 "**/*.xml"           # Copy files matching glob
