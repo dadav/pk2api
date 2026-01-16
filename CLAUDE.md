@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project Overview
 
-PK2API is a pure-Python library for reading and writing Silkroad Online PK2 file archives (JMXPACK format). Zero external dependencies - uses only Python standard library.
+PK2API is a Python library for reading and writing Silkroad Online PK2 file archives (JMXPACK format). Uses `rich` for CLI output formatting.
 
 ## Development Commands
 
@@ -44,6 +44,10 @@ pk2 copy src.pk2 dst.pk2 path/file.txt        # Copy single file
 pk2 copy src.pk2 dst.pk2 "**/*.xml"           # Copy files matching glob
 pk2 copy src.pk2 dst.pk2 data/folder -r       # Copy folder recursively
 pk2 cp src.pk2 dst.pk2 folder -r -d backup    # Copy to different destination
+
+# Global options
+pk2 --no-color list Media.pk2                 # Disable colored output
+NO_COLOR=1 pk2 list Media.pk2                 # Also respects NO_COLOR env var
 ```
 
 No test framework is currently configured.

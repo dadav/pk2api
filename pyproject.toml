@@ -25,6 +25,9 @@ classifiers = [
     "Topic :: Software Development :: Libraries :: Python Modules",
 ]
 keywords = ["silkroad", "pk2", "mmorpg", "game", "archive"]
+dependencies = [
+    "rich>=14.2.0",
+]
 
 [project.urls]
 Homepage = "https://github.com/ddavid/SRO.PK2API"

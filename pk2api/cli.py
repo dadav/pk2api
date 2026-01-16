@@ -5,11 +5,45 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import sys
+from contextlib import contextmanager
 from pathlib import Path
+from typing import Callable, Generator
+
+from rich.console import Console
+from rich.progress import (
+    BarColumn,
+    MofNCompleteColumn,
+    Progress,
+    TextColumn,
+    TimeRemainingColumn,
+)
+from rich.text import Text
 
 from .comparison import ChangeType, compare_archives
 from .pk2_stream import Pk2AuthenticationError, Pk2Stream
+
+# Global console instances (initialized in main())
+console: Console
+err_console: Console
+
+
+def _init_consoles(no_color: bool) -> None:
+    """Initialize global console instances."""
+    global console, err_console
+    console = Console(no_color=no_color)
+    err_console = Console(stderr=True, no_color=no_color)
+
+
+def _print_error(message: str) -> None:
+    """Print error message to stderr in red."""
+    err_console.print(f"[red]Error: {message}[/red]")
+
+
+def _print_success(message: str) -> None:
+    """Print success message in green."""
+    console.print(f"[green]{message}[/green]")
 
 
 def _format_size(size: int) -> str:
@@ -21,18 +55,44 @@ def _format_size(size: int) -> str:
     return f"{size:.1f} TB"
 
 
-def _progress_bar(current: int, total: int) -> None:
-    """Print progress bar to stderr."""
-    if total == 0:
+def _create_progress() -> Progress:
+    """Create a progress bar with ETA."""
+    return Progress(
+        TextColumn("[progress.description]{task.description}"),
+        BarColumn(),
+        MofNCompleteColumn(),
+        TimeRemainingColumn(),
+        console=err_console,
+        transient=True,
+    )
+
+
+@contextmanager
+def _progress_context(
+    description: str, quiet: bool
+) -> Generator[Callable[[int, int], None] | None, None, None]:
+    """
+    Context manager yielding a progress callback function.
+    Returns None if quiet mode is enabled.
+    """
+    if quiet:
+        yield None
         return
-    width = 40
-    filled = int(width * current / total)
-    bar = "=" * filled + "-" * (width - filled)
-    percent = current * 100 // total
-    sys.stderr.write(f"\r[{bar}] {percent}% ({current}/{total})")
-    sys.stderr.flush()
-    if current == total:
-        sys.stderr.write("\n")
+
+    with _create_progress() as progress:
+        task_id = progress.add_task(description, total=None)
+
+        def callback(current: int, total: int) -> None:
+            progress.update(task_id, completed=current, total=total)
+
+        yield callback
+
+
+def _highlight_match(line: str, pattern: str, ignore_case: bool) -> Text:
+    """Highlight pattern matches within a line."""
+    text = Text(line)
+    text.highlight_words([pattern], style="bold red", case_sensitive=not ignore_case)
+    return text
 
 
 def cmd_list(args: argparse.Namespace) -> int:
@@ -46,14 +106,18 @@ def cmd_list(args: argparse.Namespace) -> int:
 
             for file in sorted(files, key=lambda f: f.get_full_path()):
                 size_str = _format_size(file.size)
-                print(f"{size_str:>10}  {file.get_original_path()}")
+                text = Text()
+                text.append(f"{size_str:>10}", style="dim")
+                text.append("  ")
+                text.append(file.get_original_path())
+                console.print(text)
 
-            print(f"\n{len(files)} file(s)")
+            _print_success(f"\n{len(files)} file(s)")
     except Pk2AuthenticationError:
-        print("Error: Invalid encryption key", file=sys.stderr)
+        _print_error("Invalid encryption key")
         return 1
     except FileNotFoundError:
-        print(f"Error: File not found: {args.archive}", file=sys.stderr)
+        _print_error(f"File not found: {args.archive}")
         return 1
     return 0
 
@@ -62,23 +126,22 @@ def cmd_extract(args: argparse.Namespace) -> int:
     """Extract files from archive."""
     try:
         with Pk2Stream(args.archive, args.key, read_only=True) as pk2:
-            progress = _progress_bar if not args.quiet else None
-
-            if args.folder:
-                count = pk2.extract_folder(args.folder, args.output, progress=progress)
-            else:
-                count = pk2.extract_all(args.output, progress=progress)
+            with _progress_context("Extracting", args.quiet) as progress:
+                if args.folder:
+                    count = pk2.extract_folder(args.folder, args.output, progress=progress)
+                else:
+                    count = pk2.extract_all(args.output, progress=progress)
 
             if not args.quiet:
-                print(f"Extracted {count} file(s) to {args.output}")
+                _print_success(f"Extracted {count} file(s) to {args.output}")
     except Pk2AuthenticationError:
-        print("Error: Invalid encryption key", file=sys.stderr)
+        _print_error("Invalid encryption key")
         return 1
     except FileNotFoundError:
-        print(f"Error: File not found: {args.archive}", file=sys.stderr)
+        _print_error(f"File not found: {args.archive}")
         return 1
     except ValueError as e:
-        print(f"Error: {e}", file=sys.stderr)
+        _print_error(str(e))
         return 1
     return 0
 
@@ -87,26 +150,25 @@ def cmd_add(args: argparse.Namespace) -> int:
     """Add files to archive."""
     source = Path(args.source)
     if not source.exists():
-        print(f"Error: Source not found: {args.source}", file=sys.stderr)
+        _print_error(f"Source not found: {args.source}")
         return 1
 
     try:
         with Pk2Stream(args.archive, args.key) as pk2:
-            progress = _progress_bar if not args.quiet else None
-
-            if source.is_dir():
-                count = pk2.import_from_disk(source, args.target, progress=progress)
-            else:
-                pk2.add_file(
-                    args.target + "/" + source.name if args.target else source.name,
-                    source.read_bytes(),
-                )
-                count = 1
+            with _progress_context("Adding", args.quiet) as progress:
+                if source.is_dir():
+                    count = pk2.import_from_disk(source, args.target, progress=progress)
+                else:
+                    pk2.add_file(
+                        args.target + "/" + source.name if args.target else source.name,
+                        source.read_bytes(),
+                    )
+                    count = 1
 
             if not args.quiet:
-                print(f"Added {count} file(s)")
+                _print_success(f"Added {count} file(s)")
     except Pk2AuthenticationError:
-        print("Error: Invalid encryption key", file=sys.stderr)
+        _print_error("Invalid encryption key")
         return 1
     return 0
 
@@ -116,16 +178,16 @@ def cmd_info(args: argparse.Namespace) -> int:
     try:
         with Pk2Stream(args.archive, args.key, read_only=True) as pk2:
             stats = pk2.get_stats()
-            print(f"Archive: {args.archive}")
-            print(f"Files:   {stats['files']}")
-            print(f"Folders: {stats['folders']}")
-            print(f"Size:    {_format_size(stats['total_size'])}")
-            print(f"On disk: {_format_size(stats['disk_used'])}")
+            console.print(f"[dim]Archive:[/dim] {args.archive}")
+            console.print(f"[dim]Files:[/dim]   {stats['files']}")
+            console.print(f"[dim]Folders:[/dim] {stats['folders']}")
+            console.print(f"[dim]Size:[/dim]    [cyan]{_format_size(stats['total_size'])}[/cyan]")
+            console.print(f"[dim]On disk:[/dim] [cyan]{_format_size(stats['disk_used'])}[/cyan]")
     except Pk2AuthenticationError:
-        print("Error: Invalid encryption key", file=sys.stderr)
+        _print_error("Invalid encryption key")
         return 1
     except FileNotFoundError:
-        print(f"Error: File not found: {args.archive}", file=sys.stderr)
+        _print_error(f"File not found: {args.archive}")
         return 1
     return 0
 
@@ -136,17 +198,17 @@ def cmd_validate(args: argparse.Namespace) -> int:
         with Pk2Stream(args.archive, args.key, read_only=True) as pk2:
             errors = pk2.validate()
             if errors:
-                print(f"Found {len(errors)} error(s):")
+                console.print(f"[red]Found {len(errors)} error(s):[/red]")
                 for error in errors:
-                    print(f"  - {error}")
+                    console.print(f"  [red]- {error}[/red]")
                 return 1
             else:
-                print("Archive is valid")
+                _print_success("Archive is valid")
     except Pk2AuthenticationError:
-        print("Error: Invalid encryption key", file=sys.stderr)
+        _print_error("Invalid encryption key")
         return 1
     except FileNotFoundError:
-        print(f"Error: File not found: {args.archive}", file=sys.stderr)
+        _print_error(f"File not found: {args.archive}")
         return 1
     return 0
 
@@ -156,49 +218,55 @@ def cmd_compare(args: argparse.Namespace) -> int:
     try:
         with Pk2Stream(args.source, args.key, read_only=True) as source:
             with Pk2Stream(args.target, args.key, read_only=True) as target:
+                with _progress_context("Comparing", args.quiet) as progress:
 
-                def progress_cb(current_file: str, current: int, total: int) -> None:
-                    if not args.quiet and total > 0:
-                        _progress_bar(current, total)
+                    def progress_cb(current_file: str, current: int, total: int) -> None:
+                        if progress and total > 0:
+                            progress(current, total)
 
-                result = compare_archives(
-                    source,
-                    target,
-                    compute_hashes=not args.quick,
-                    hash_algorithm=args.hash,
-                    include_unchanged=args.all,
-                    progress=progress_cb if not args.quiet else None,
-                )
+                    result = compare_archives(
+                        source,
+                        target,
+                        compute_hashes=not args.quick,
+                        hash_algorithm=args.hash,
+                        include_unchanged=args.all,
+                        progress=progress_cb if not args.quiet else None,
+                    )
 
                 if args.format == "json":
-                    print(json.dumps(result.to_dict(), indent=2))
+                    console.print(json.dumps(result.to_dict(), indent=2))
                 else:
-                    # Text output
-                    print(f"Comparing: {args.source} -> {args.target}\n")
+                    console.print(f"Comparing: {args.source} -> {args.target}\n")
 
                     if result.removed_files:
-                        print(f"Removed ({len(result.removed_files)}):")
+                        console.print(f"[bold]Removed ({len(result.removed_files)}):[/bold]")
                         for f in result.removed_files:
-                            print(f"  - {f.original_path} ({_format_size(f.source_size)})")
+                            console.print(
+                                f"  [red]- {f.original_path}[/red] [dim]({_format_size(f.source_size)})[/dim]"
+                            )
 
                     if result.added_files:
-                        print(f"\nAdded ({len(result.added_files)}):")
+                        console.print(f"\n[bold]Added ({len(result.added_files)}):[/bold]")
                         for f in result.added_files:
-                            print(f"  + {f.original_path} ({_format_size(f.target_size)})")
+                            console.print(
+                                f"  [green]+ {f.original_path}[/green] [dim]({_format_size(f.target_size)})[/dim]"
+                            )
 
                     if result.modified_files:
-                        print(f"\nModified ({len(result.modified_files)}):")
+                        console.print(f"\n[bold]Modified ({len(result.modified_files)}):[/bold]")
                         for f in result.modified_files:
                             size_change = (f.target_size or 0) - (f.source_size or 0)
                             sign = "+" if size_change >= 0 else ""
-                            print(
-                                f"  * {f.original_path} ({sign}{_format_size(abs(size_change))})"
+                            console.print(
+                                f"  [yellow]* {f.original_path}[/yellow] [dim]({sign}{_format_size(abs(size_change))})[/dim]"
                             )
 
                     if result.unchanged_files:
-                        print(f"\nUnchanged ({len(result.unchanged_files)}):")
+                        console.print(f"\n[bold]Unchanged ({len(result.unchanged_files)}):[/bold]")
                         for f in result.unchanged_files:
-                            print(f"  = {f.original_path} ({_format_size(f.source_size)})")
+                            console.print(
+                                f"  [dim]= {f.original_path} ({_format_size(f.source_size)})[/dim]"
+                            )
 
                     if result.folder_changes:
                         removed_folders = [
@@ -213,33 +281,32 @@ def cmd_compare(args: argparse.Namespace) -> int:
                         ]
 
                         if removed_folders:
-                            print(f"\nFolders removed ({len(removed_folders)}):")
+                            console.print(f"\n[bold]Folders removed ({len(removed_folders)}):[/bold]")
                             for f in removed_folders:
-                                print(f"  - {f.original_path}/")
+                                console.print(f"  [red]- {f.original_path}/[/red]")
 
                         if added_folders:
-                            print(f"\nFolders added ({len(added_folders)}):")
+                            console.print(f"\n[bold]Folders added ({len(added_folders)}):[/bold]")
                             for f in added_folders:
-                                print(f"  + {f.original_path}/")
+                                console.print(f"  [green]+ {f.original_path}/[/green]")
 
                     if not result.has_differences:
-                        print("Archives are identical")
+                        _print_success("Archives are identical")
                     else:
-                        print(
-                            f"\nSummary: {len(result.added_files)} added, "
-                            f"{len(result.removed_files)} removed, "
-                            f"{len(result.modified_files)} modified, "
-                            f"{len(result.unchanged_files)} unchanged"
+                        console.print(
+                            f"\n[bold]Summary:[/bold] [green]{len(result.added_files)} added[/green], "
+                            f"[red]{len(result.removed_files)} removed[/red], "
+                            f"[yellow]{len(result.modified_files)} modified[/yellow], "
+                            f"[dim]{len(result.unchanged_files)} unchanged[/dim]"
                         )
 
-                # Return 0 if identical, 2 if different (like diff)
                 return 0 if not result.has_differences else 2
 
     except Pk2AuthenticationError:
-        print("Error: Invalid encryption key", file=sys.stderr)
+        _print_error("Invalid encryption key")
         return 1
     except FileNotFoundError as e:
-        print(f"Error: File not found: {e.filename}", file=sys.stderr)
+        _print_error(f"File not found: {e.filename}")
         return 1
 
 
@@ -248,50 +315,45 @@ def cmd_copy(args: argparse.Namespace) -> int:
     try:
         with Pk2Stream(args.source, args.key, read_only=True) as source:
             with Pk2Stream(args.target, args.key) as target:
-                progress = _progress_bar if not args.quiet else None
-
-                if args.folder:
-                    # Copy entire folder
-                    count = target.copy_folder_from(
-                        source,
-                        args.path,
-                        args.dest if args.dest else None,
-                        progress=progress,
-                    )
-                else:
-                    # Copy single file or glob pattern
-                    if "*" in args.path or "?" in args.path:
-                        # Glob pattern
-                        files = source.glob(args.path)
-                        if not files:
-                            print(f"No files match pattern: {args.path}", file=sys.stderr)
-                            return 1
-                        paths = [f.get_full_path() for f in files]
-                        count = target.copy_files_from(
-                            source, paths, args.dest, progress=progress
+                with _progress_context("Copying", args.quiet) as progress:
+                    if args.folder:
+                        count = target.copy_folder_from(
+                            source,
+                            args.path,
+                            args.dest if args.dest else None,
+                            progress=progress,
                         )
                     else:
-                        # Single file
-                        if target.copy_file_from(
-                            source, args.path, args.dest if args.dest else None
-                        ):
-                            count = 1
+                        if "*" in args.path or "?" in args.path:
+                            files = source.glob(args.path)
+                            if not files:
+                                _print_error(f"No files match pattern: {args.path}")
+                                return 1
+                            paths = [f.get_full_path() for f in files]
+                            count = target.copy_files_from(
+                                source, paths, args.dest, progress=progress
+                            )
                         else:
-                            print(f"Error: File not found: {args.path}", file=sys.stderr)
-                            return 1
+                            if target.copy_file_from(
+                                source, args.path, args.dest if args.dest else None
+                            ):
+                                count = 1
+                            else:
+                                _print_error(f"File not found: {args.path}")
+                                return 1
 
                 if not args.quiet:
-                    print(f"Copied {count} file(s)")
+                    _print_success(f"Copied {count} file(s)")
                 return 0
 
     except Pk2AuthenticationError:
-        print("Error: Invalid encryption key", file=sys.stderr)
+        _print_error("Invalid encryption key")
         return 1
     except FileNotFoundError as e:
-        print(f"Error: File not found: {e.filename}", file=sys.stderr)
+        _print_error(f"File not found: {e.filename}")
         return 1
     except ValueError as e:
-        print(f"Error: {e}", file=sys.stderr)
+        _print_error(str(e))
         return 1
 
 
@@ -305,8 +367,7 @@ def cmd_grep(args: argparse.Namespace) -> int:
                 files = list(pk2.iter_files())
 
             pattern = args.pattern
-            if args.ignore_case:
-                pattern = pattern.lower()
+            search_pattern = pattern.lower() if args.ignore_case else pattern
 
             match_count = 0
             matched_files = set()
@@ -315,31 +376,37 @@ def cmd_grep(args: argparse.Namespace) -> int:
                 try:
                     content = file.get_content().decode("utf-8")
                 except UnicodeDecodeError:
-                    continue  # Skip binary files
+                    continue
 
                 lines = content.splitlines()
                 for line_num, line in enumerate(lines, 1):
                     search_line = line.lower() if args.ignore_case else line
-                    if pattern in search_line:
+                    if search_pattern in search_line:
                         match_count += 1
                         filepath = file.get_original_path()
 
                         if args.files_only:
                             if filepath not in matched_files:
                                 matched_files.add(filepath)
-                                print(filepath)
+                                console.print(f"[cyan]{filepath}[/cyan]")
                         else:
-                            print(f"{filepath}:{line_num}:{line}")
+                            text = Text()
+                            text.append(filepath, style="cyan")
+                            text.append(":", style="dim")
+                            text.append(str(line_num), style="dim")
+                            text.append(":", style="dim")
+                            text.append(_highlight_match(line, pattern, args.ignore_case))
+                            console.print(text)
 
             if match_count == 0:
-                return 2  # No matches (like grep)
+                return 2
             return 0
 
     except Pk2AuthenticationError:
-        print("Error: Invalid encryption key", file=sys.stderr)
+        _print_error("Invalid encryption key")
         return 1
     except FileNotFoundError:
-        print(f"Error: File not found: {args.archive}", file=sys.stderr)
+        _print_error(f"File not found: {args.archive}")
         return 1
 
 
@@ -351,6 +418,11 @@ def main() -> int:
     )
     parser.add_argument(
         "--key", "-k", default="169841", help="Encryption key (default: 169841)"
+    )
+    parser.add_argument(
+        "--no-color",
+        action="store_true",
+        help="Disable colored output (also respects NO_COLOR env var)",
     )
 
     subparsers = parser.add_subparsers(dest="command", required=True)
@@ -446,6 +518,11 @@ def main() -> int:
     grep_p.set_defaults(func=cmd_grep)
 
     args = parser.parse_args()
+
+    # Initialize consoles with color preference
+    no_color = args.no_color or os.environ.get("NO_COLOR") is not None
+    _init_consoles(no_color)
+
     return args.func(args)
 
 
